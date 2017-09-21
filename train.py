@@ -6,6 +6,14 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
 from scipy.stats import norm, skew
+from sklearn import model_selection, preprocessing
+import xgboost as xgb
+
+
+import warnings
+def ignore_warn(*args, **kwargs):
+    pass
+warnings.warn = ignore_warn #ignore annoying warning (from sklearn and seaborn)
 
 np.set_printoptions(threshold=np.nan)
 color = sns.color_palette()
@@ -24,15 +32,8 @@ class Settings(Enum):
         return self.value
         
     
-## STEP2: process data
-# remove outliers
-def display_logerror():
-    plt.figure()
-    plt.scatter(x = range(train_df.shape[0]), y = np.sort(train_df['logerror'].values))
-    plt.xlabel('index', fontsize=12)
-    plt.ylabel('logerror', fontsize=12)
-    plt.show()
-    
+## STEP2: process data    
+# helper: display transaction data    
 def display_transaction_data():
     plt.figure()
     counts_in_month = train_df['transactiondate'].dt.month.value_counts()
@@ -42,6 +43,7 @@ def display_transaction_data():
     plt.ylabel('Number of transactions', fontsize=12)
     plt.show()
 
+# helper: display distribution
 def display_distrib(feature):
     plt.figure()
     sns.distplot(train_df[feature].dropna() , fit=norm);
@@ -52,60 +54,19 @@ def display_distrib(feature):
     plt.title('distribution')
     plt.show()
     
-def display_NA_ratio():
-    fig, ax = plt.subplots(figsize=(12,12))
+# helper: display outlier respect to the target feature
+def display_outlier(feature):
+    fig, ax = plt.subplots()
+    ax.scatter(x = train_df[feature], y = train_df['logerror'])
+    plt.ylabel('logerror', fontsize=13)
+    plt.xlabel(feature, fontsize=13)
+    plt.show()  
     
-    missing_df = prop_df.isnull().sum(axis=0).reset_index()
-    missing_df.columns = ['column_name', 'missing_count']
-    missing_df = missing_df.loc[missing_df['missing_count']>0]
-    missing_df = missing_df.sort_values(by='missing_count')
-    
-    ind = np.arange(missing_df.shape[0])
-    ax.barh(ind, missing_df.missing_count.values, color='blue') #horizontal rectangles
-    ax.set_yticks(ind)
-    ax.set_yticklabels(missing_df.column_name.values, rotation='horizontal')
-    ax.set_xlabel("Count of missing values")
-    ax.set_title("Number of missing values in each column")
-    plt.show()
-
-def display_latitude_longtitude():
-    plt.figure()
-    sns.jointplot(x=prop_df.latitude.values, y=prop_df.longitude.values, size=10)
-    plt.ylabel('Longitude', fontsize=12)
-    plt.xlabel('Latitude', fontsize=12)
-    plt.show()
-
-def display_correlation():
-    # Let us just impute the missing values with mean values to compute correlation coefficients #
-    #mean_values = train_df.mean(axis=0)
-    #train_df_new = train_df.fillna(mean_values, inplace=True)
-    
-    # Now let us look at the correlation coefficient of each of these variables #
-    x_cols = [col for col in train_df.columns if col not in ['logerror'] if train_df[col].dtype=='float64']
-    
-    labels = []
-    values = []
-    for col in x_cols:
-        labels.append(col)
-        values.append(np.corrcoef(train_df[col].values, train_df.logerror.values)[0,1])
-    corr_df = pd.DataFrame({'col_labels':labels, 'corr_values':values})
-    corr_df = corr_df.sort_values(by='corr_values')
-        
-    ind = np.arange(len(labels))
-    width = 0.9
-    fig, ax = plt.subplots(figsize=(12,40))
-    rects = ax.barh(ind, np.array(corr_df.corr_values.values), color='y')
-    ax.set_yticks(ind)
-    ax.set_yticklabels(corr_df.col_labels.values, rotation='horizontal')
-    ax.set_xlabel("Correlation coefficient")
-    ax.set_title("Correlation coefficient of the variables")
-    #autolabel(rects)
-    plt.show()
-    
+# normalize the distribution of the target feature if necessary    
 def process_target_feature():
     plt.figure()
-    sns.distplot(logerror.dropna() , fit=norm);
-    (mu, sigma) = norm.fit(logerror.dropna())    
+    sns.distplot(train_df['logerror'].dropna() , fit=norm);
+    (mu, sigma) = norm.fit(train_df['logerror'].dropna())    
     
     plt.legend(['Normal dist. ($\mu=$ {:.2f} and $\sigma=$ {:.2f} )'.format(mu, sigma)], loc='best')
     plt.ylabel('Frequency')
@@ -117,11 +78,11 @@ def process_NA():
     # compute NA ratio before adding
     na_ratio = (train_df.isnull().sum() / len(train_df)) * 100    
     na_ratio = na_ratio.sort_values(ascending=False)
-    print('NA ratio before adding: \n', na_ratio)
+    print('\nNA ratio before adding:\n', na_ratio)
     
     # add NA manually
-    train_df['airconditioningtypeid'] = train_df['airconditioningtypeid'].fillna(1) # because all are almost 1
-    train_df['architecturalstyletypeid'] = train_df['architecturalstyletypeid'].fillna(7) # because all are almost 7
+    train_df['airconditioningtypeid'] = train_df['airconditioningtypeid'].fillna("None")
+    train_df['architecturalstyletypeid'] = train_df['architecturalstyletypeid'].fillna("None")
     train_df['basementsqft'] = train_df['basementsqft'].fillna(0)
     train_df['bathroomcnt'] = train_df['bathroomcnt'].fillna(train_df['bathroomcnt'].mean(axis=0))
     train_df['buildingclasstypeid'] = train_df['buildingclasstypeid'].fillna("None")
@@ -180,22 +141,99 @@ def process_NA():
     # compute NA ratio after adding
     na_ratio = (train_df.isnull().sum() / len(train_df)) * 100    
     na_ratio = na_ratio.sort_values(ascending=False)
-    print('NA ratio after adding: \n', na_ratio)
+    print('\nNA ratio after adding:\n', na_ratio)
         
-    
-# remove outliers based on their correlation with the target feature    
+# remove outliers
 def process_outlier():
-    #print(train_df.dtypes)
-    pass
+    print(train_df.dtypes)
+    
+    # display before removing outliers
+    #for feature in train_df:
+    #    if train_df[feature].dtype == "float64":
+    #        display_outlier(feature)          
+    
+    display_outlier('finishedfloor1squarefeet')
+    train_df.drop(train_df[(train_df['finishedfloor1squarefeet']<2000) & (train_df['logerror']<-4)].index, axis=0, inplace=True)
+    display_outlier('finishedfloor1squarefeet')
+    
+    display_outlier('finishedsquarefeet15')
+    train_df.drop(train_df[(train_df['finishedsquarefeet15']>20000) & (train_df['logerror']<1)].index, axis=0, inplace=True)
+    display_outlier('finishedsquarefeet15')
+    
+    display_outlier('finishedsquarefeet50')
+    train_df.drop(train_df[(train_df['finishedsquarefeet50']<2000) & (train_df['logerror']<-4)].index, axis=0, inplace=True)
+    display_outlier('finishedsquarefeet50')
+    
+    display_outlier('garagetotalsqft')
+    train_df.drop(train_df[(train_df['garagetotalsqft']>7000) & (train_df['logerror']>-1)].index, axis=0, inplace=True)
+    display_outlier('garagetotalsqft')    
+    
+    display_outlier('lotsizesquarefeet')
+    train_df.drop(train_df[(train_df['lotsizesquarefeet']>6000000) & (train_df['logerror']>-1)].index, axis=0, inplace=True)
+    display_outlier('lotsizesquarefeet')   
+    
+    display_outlier('unitcnt')
+    train_df.drop(train_df[(train_df['unitcnt']>40) & (train_df['logerror']<2)].index, axis=0, inplace=True)
+    display_outlier('unitcnt')     
 
+    display_outlier('yardbuildingsqft17')
+    train_df.drop(train_df[(train_df['yardbuildingsqft17']<500) & (train_df['logerror']<-4)].index, axis=0, inplace=True)
+    display_outlier('yardbuildingsqft17')   
+    
+    display_outlier('taxdelinquencyyear')
+    train_df.drop(train_df[(train_df['taxdelinquencyyear']>80) & (train_df['logerror']>0)].index, axis=0, inplace=True)
+    display_outlier('taxdelinquencyyear')   
+    
 # normalize distribution
-def process_skewness():
-    pass
-
-# do feature engineering: add, remove, select, encoding
+def process_skewness():                
+    display_distrib("calculatedfinishedsquarefeet")            
+    train_df["calculatedfinishedsquarefeet"] = np.log1p(train_df["calculatedfinishedsquarefeet"])
+    display_distrib("calculatedfinishedsquarefeet")
+            
+    display_distrib("finishedsquarefeet12")            
+    train_df["finishedsquarefeet12"] = np.log1p(train_df["finishedsquarefeet12"])
+    display_distrib("finishedsquarefeet12")
+            
+# do feature engineering: add, select, encode
 def process_feature():
-    pass
+    # add features
+    
+    # select features    
+    for feature in train_df:
+        if train_df[feature].dtype=='object':
+            lbl = preprocessing.LabelEncoder()
+            lbl.fit(list(train_df[feature].values)) 
+            train_df[feature] = lbl.transform(list(train_df[feature].values))
+            
+    train_y = train_df.logerror.values
+    train_X = train_df.drop(["transactiondate", "logerror"], axis=1)
+    
+    xgb_params = {
+        'eta': 0.05,
+        'max_depth': 8,
+        'subsample': 0.7,
+        'colsample_bytree': 0.7,
+        'objective': 'reg:linear',
+        'eval_metric': 'rmse',
+        'silent': 1
+    }
+    dtrain = xgb.DMatrix(train_X, train_y, feature_names=train_X.columns.values)
+    model = xgb.train(dict(xgb_params, silent=0), dtrain, num_boost_round=100)
+    
+    featureImportance = model.get_fscore()
+    features = pd.DataFrame()
+    features['features'] = featureImportance.keys()
+    features['importance'] = featureImportance.values()
+    features.sort_values(by=['importance'],ascending=False,inplace=True)
+    fig,ax= plt.subplots()
+    fig.set_size_inches(20,10)
+    plt.xticks(rotation=90)
+    sns.barplot(data=features.head(15),x="importance",y="features",ax=ax,orient="h",color="#34495e")
 
+    # encode features
+    
+    
+    
 def _process_data():
     # load data
     global train_df
@@ -203,6 +241,9 @@ def _process_data():
     train_df = pd.read_csv(train_path, parse_dates=["transactiondate"])
     prop_df = pd.read_csv(properties_path)
 
+    #print(pd_train.head(5))
+    #print(pd_prop.head(5))
+    
     print('train shape before merging', train_df.shape)
     train_df = pd.merge(train_df, prop_df, on='parcelid', how='left')
     print('train shape after merging', train_df.shape)
@@ -211,41 +252,24 @@ def _process_data():
     parcelid = train_df.parcelid
     train_df.drop(['parcelid'], axis=1, inplace=True)
     
-    global logerror
-    logerror = train_df.logerror
-    train_df.drop(['logerror'], axis=1, inplace=True)
-        
-  
     
-    
-    
-    #print(pd_train.head(5))
-    #print(pd_prop.head(5))
-        
-    #display_logerror()
-    #display_transaction_data()
-    #display_NA_ratio()
-    #display_latitude_longtitude()
-    
-    #train_df['transaction_month'] = train_df['transactiondate'].dt.month
-    #train_df = pd.merge(train_df, prop_df, on='parcelid', how='left')
-    #print(train_df.head())
-    #print(train_df.dtypes)
-    #display_correlation()
+    #global logerror
+    #logerror = train_df.logerror
+    #train_df.drop(['logerror'], axis=1, inplace=True)
 
-    # process target feature (logerror)
+    # process the target feature (logerror)
     process_target_feature()
 
+    # remove outliers
+    process_outlier()
+    
     # fill NAs
     process_NA()
     
-    # remove outliers
-    process_outlier()
-
     # normalize distribution
     process_skewness()
             
-    # do feature engineering: add, remove, select, encoding
+    # do feature engineering: add, select, encode
     process_feature()
     
     
