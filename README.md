@@ -1,1 +1,1 @@
-# kaggle_zillow_price
+# Developing a ML algorithm for kaggle zillow price competition.
