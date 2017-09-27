@@ -12,6 +12,8 @@ from sklearn.metrics import mean_squared_error
 import xgboost as xgb
 import lightgbm as lgb
 from datetime import datetime
+import gc
+
 
 
 import warnings
@@ -38,6 +40,7 @@ class Settings(Enum):
     def __str__(self):
         return self.value
         
+    
 ## STEP1: process data    
 # helper: display transaction data    
 def display_transaction_date():
@@ -258,25 +261,27 @@ def process_skewness():
 # do feature engineering: add, select, encode
 def process_feature():
     # remove features
-    transactiondate = train_df['transactiondate']
     train_df.drop(['transactiondate'], axis=1, inplace=True)
     
     train_df.drop(['parcelid'], axis=1, inplace=True)    
     prop_df.drop(['parcelid'], axis=1, inplace=True)
     
+    #TODO
     # encode features: transform categorical features into numeric features
-    for feature in train_df:
-        if train_df[feature].dtype=='object':
-            lbl = preprocessing.LabelEncoder()            
-            lbl.fit(list(train_df[feature].values)) 
-            train_df[feature] = lbl.transform(list(train_df[feature].values))
-            
     for feature in prop_df:
         if prop_df[feature].dtype=='object':
             lbl = preprocessing.LabelEncoder()
             lbl.fit(list(prop_df[feature].values)) 
             prop_df[feature] = lbl.transform(list(prop_df[feature].values))
             
+    for feature in train_df:
+        if train_df[feature].dtype=='object':
+            lbl = preprocessing.LabelEncoder()            
+            lbl.fit(list(train_df[feature].values)) 
+            train_df[feature] = lbl.transform(list(train_df[feature].values))
+
+                  
+    '''
     # run xgboot to pick best features up
     xgb_params = {
         'eta': 0.05,
@@ -298,27 +303,20 @@ def process_feature():
     features_df['importance'] = feature_importance.values()
     features_df.sort_values(by=['importance'], ascending=False, inplace=True)
     
-    '''
     # display best features
     fig,ax= plt.subplots()
     fig.set_size_inches(10,10)
     plt.xticks(rotation=90)
     sns.barplot(data=features_df, x="importance", y="features", ax=ax, orient="h", color="#34495e")
     plt.show()
-    '''
 	
     # select only important features
     for feature in train_df:
-        if feature not in list(features_df.head(40).features):
+        if feature not in list(features_df.head(45).features):
             train_df.drop(feature, axis=1, inplace=True)
             prop_df.drop(feature, axis=1, inplace=True)
-        
-    # add features
-    train_df['transactiondate_year'] = transactiondate.dt.year
-    train_df['transactiondate_month'] = transactiondate.dt.month
-    train_df['transactiondate_year'].fillna(0)
-    train_df['transactiondate_month'].fillna(0)        
-        
+    '''
+            
 def _process_data():
     print('\n\nSTEP1: _process_data() ...')
     
@@ -376,101 +374,75 @@ def _process_data():
     
     global train_x
     global train_y
+    global valid_x
+    global valid_y
     global test_x
+    
     train_y = logerror.values
     train_x = train_df
     test_x = prop_df
+
+    split = 80000
+    train_x, valid_x = train_x[:split], train_x[split:]
+    train_y, valid_y = train_y[:split], train_y[split:]
     
     print('train_x shape: ', train_x.shape)
     print('train_y shape: ', train_y.shape)
+    print('valid_x shape: ', valid_x.shape)
+    print('valid_y shape: ', valid_y.shape)    
     print('test_x shape: ', test_x.shape)
     
     #print('train features: ', train_x.columns.values)
     #print('test features: ', test_x.columns.values)
+
+    # release
+    del train_df; gc.collect()
+    del prop_df; gc.collect()
     
+
 ## STEP2: build model
-# compute root mean square for cross evaluation
-def rmsle_cv(model):
-    n_folds = 5
-    kf = KFold(n_folds, shuffle=True, random_state=42).get_n_splits(train_df.values)
-    rmse= np.sqrt(-cross_val_score(model, train_df.values, train_y, scoring="neg_mean_squared_error", cv = kf))
-    return(rmse)
-
-# build model
 def _build_model():
-    print('\n\nSTEP2: _build_model() ...')
-    
-    # lightgbm model
-    global lgb_model
-    lgb_model = lgb.LGBMRegressor(objective='regression',num_leaves=5,
-                                  learning_rate=0.05, n_estimators=720,
-                                  max_bin = 55, bagging_fraction = 0.8,
-                                  bagging_freq = 5, feature_fraction = 0.2319,
-                                  feature_fraction_seed=9, bagging_seed=9,
-                                  min_data_in_leaf =6, min_sum_hessian_in_leaf = 11)
-        
-    score = rmsle_cv(lgb_model)
-    print('LGBM score(cv): {:.4f} ({:.4f})'.format(score.mean(), score.std()))
-    
-    # xgboost model
-    global xgb_model
-    xgb_model = xgb.XGBRegressor(colsample_bytree=0.4603, gamma=0.0468, 
-                                 learning_rate=0.05, max_depth=3, 
-                                 min_child_weight=1.7817, n_estimators=2200,
-                                 reg_alpha=0.4640, reg_lambda=0.8571,
-                                 subsample=0.5213, silent=1)
-    
-    score = rmsle_cv(xgb_model)
-    print('Xgboost score(cv): {:.4f} ({:.4f})'.format(score.mean(), score.std()))  
+    print('\nBuild model ...')
+    global params
+    params = {}
+    params['eta'] = 0.02
+    params['objective'] = 'reg:linear'
+    params['eval_metric'] = 'mae'
+    params['max_depth'] = 4
+    params['silent'] = 1    
 
-## STEP3: train
-# compute mean absolute error
-def MAE(y, y_pred):
-    #logerror=log(Zestimate)−log(SalePrice)
-    return np.sum([abs(y[i]-y_pred[i]) for i in range(len(y))]) / len(y)
-
-# train
+    
+## STEP3: train    
 def _train():
-    print('\n\nSTEP3: _train() ...')
+    print('Train ...')
+    global clf
+    d_train = xgb.DMatrix(train_x, label=train_y)
+    d_valid = xgb.DMatrix(valid_x, label=valid_y)
     
-    # lightgbm training
-    lgb_model.fit(train_x, train_y)
-    lgb_train_pred = lgb_model.predict(train_x)    
-    print('lightgbm MAE: {:.4f}'.format(MAE(train_y, lgb_train_pred)))
+    evals = [(d_train, 'train'), (d_valid, 'valid')]
+    clf = xgb.train(params, d_train, 
+                    num_boost_round=10000, evals=evals, 
+                    early_stopping_rounds=100, verbose_eval=10)
     
-    # xgboost training
-    xgb_model.fit(train_x, train_y)
-    xgb_train_pred = xgb_model.predict(train_x)    
-    print('xgboost MAE: {:.4f}'.format(MAE(train_y, xgb_train_pred)))    
-
-## predict
+    
+## STEP4: predict    
 def _predict():
-    print('\n\nSTEP4: _predict() ...')
-    
+    print('Predicting ...')
     global submission
+    d_test = xgb.DMatrix(test_x)
+    p_test = clf.predict(d_test)
+    submission = pd.read_csv('C:/data/kaggle/zillow_price/sample_submission.csv')
+    for c in submission.columns[submission.columns != 'ParcelId']:
+        submission[c] = p_test
     
-    submission = pd.read_csv(submission_path)
-    test_dates = ['2016-10-01','2016-11-01','2016-12-01','2017-10-01','2017-11-01','2017-12-01']
-    test_columns = ['201610','201611','201612','201710','201711','201712']
     
-    for i in range(len(test_dates)):
-        test_x["transactiondate_year"] = pd.to_datetime(test_dates[i]).year
-        test_x["transactiondate_month"] = pd.to_datetime(test_dates[i]).month
-        test_x['transactiondate_year'].fillna(0)
-        test_x['transactiondate_month'].fillna(0)
-        
-        #lgb_test_pred = lgb_model.predict(test_x)
-        #submission[test_columns[i]] = [float(format(x, '.4f')) for x in lgb_test_pred]
-        
-        xgb_test_pred = xgb_model.predict(test_x)
-        submission[test_columns[i]] = [float(format(x, '.4f')) for x in xgb_test_pred]
-        
-## STEP5: generate submission
+## STEP5: generate submission    
 def _generate_submission():
-    print('\n\nSTEP5: _generate_submission() ...')
-    submission.to_csv(submission_dir+'sub{}.csv'.format(datetime.now().strftime('%Y%m%d_%H%M%S')), index=False)
-        
-    
+    print('Writing csv ...')
+    submission.to_csv(submission_dir+'sub{}.csv'.format(datetime.now().\
+                      strftime('%Y%m%d_%H%M%S')), index=False, float_format='%.4f')
+
+
 ## main
 def main():
     _process_data()
