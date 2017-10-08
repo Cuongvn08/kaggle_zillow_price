@@ -536,7 +536,7 @@ def _train():
         full_d_train = xgb.DMatrix(full_train_x, label=full_train_y)
         evals = [(full_d_train, 'train')]
         full_xgb_clf = xgb.train(full_xgb_params, full_d_train, 
-                                 num_boost_round=best_num_boost_round, 
+                                 num_boost_round=5000, 
                                  evals=evals,verbose_eval=10)
     
             
