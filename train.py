@@ -24,13 +24,14 @@ class Settings(Enum):
     global submission_path
     global XGB_WEIGHT
     global LGB_WEIGHT
+    global TRAIN_FULL_SET
     
     train_path      = 'C:/data/kaggle/zillow_price/train_2016_v2.csv'
     properties_path = 'C:/data/kaggle/zillow_price/properties_2016.csv'
     submission_path = 'C:/data/kaggle/zillow_price/sample_submission.csv'
     XGB_WEIGHT = 0.5
     LGB_WEIGHT = 1 - XGB_WEIGHT
-    
+    TRAIN_FULL_SET = True
     
     def __str__(self):
         return self.value
@@ -181,7 +182,9 @@ def select_features(df):
 
 def _process_data():
     print('\n\nSTEP1: processing data ...')
-    
+
+    global full_train_x
+    global full_train_y    
     global train_x
     global train_y
     global valid_x
@@ -219,11 +222,16 @@ def _process_data():
     
     train_y = train_x['logerror']
     train_x.drop(['logerror'], axis=1, inplace=True)
+
+    full_train_x = train_x.copy()
+    full_train_y = train_y.copy()
     
     select_qtr4 = pd.to_datetime(train_df["transactiondate"]).dt.month > 9
     train_x, valid_x = train_x[~select_qtr4], train_x[select_qtr4]
     train_y, valid_y = train_y[~select_qtr4], train_y[select_qtr4]
-    
+
+    print('full train x shape: ', full_train_x.shape)
+    print('full train y shape: ', full_train_y.shape)    
     print('train x shape: ', train_x.shape)
     print('train y shape: ', train_y.shape)
     print('valid x shape: ', valid_x.shape)
@@ -240,15 +248,223 @@ def _process_data():
     del prop_df
     gc.collect()
     
+
+## STEPZZZ: tune hyperparameters
+def tune_eta(params):
+    print('\nTuning eta ...')
     
+    num_boost_round = 5000
+    d_train = xgb.DMatrix(full_train_x, label=full_train_y)
+    
+    eta_list = [0.2, 0.1, 0.05, 0.025, 0.005, 0.0025]
+    min_mae = float("Inf")
+    best_eta = eta_list[0]
+    
+    for eta in eta_list:
+        # update params
+        params['eta'] = eta
+
+        # run cv
+        cv_results = xgb.cv(
+            params,
+            d_train,
+            num_boost_round = num_boost_round,
+            nfold=5,
+            metrics={'mae'},
+            early_stopping_rounds=10
+        )
+    
+        # print
+        mae = cv_results['test-mae-mean'].min()
+        rounds = cv_results['test-mae-mean'].argmin()
+        print('eta:', eta, '; mae:',mae, '; rounds:', rounds)
+    
+        # check min mae
+        if mae < min_mae:
+            min_mae = mae
+            best_eta = eta
+                    
+    print('best eta:', best_eta)
+    print('min mae:', min_mae)
+    return best_eta
+
+def tune_max_depth__min_child_weight(params):
+    print('\nTuning max_depth and min_child_weight ...')
+    
+    num_boost_round = 5000
+    d_train = xgb.DMatrix(full_train_x, label=full_train_y)
+    
+    max_depth_list = list(range(5,10))
+    min_child_weight_list = list(range(1,5))
+    min_mae = float("Inf")
+    best_max_depth = max_depth_list[0]
+    best_min_child_weight = min_child_weight_list[0]
+    
+    for max_depth, min_child_weight in zip(max_depth_list, min_child_weight_list):
+        # update params
+        params['max_depth'] = max_depth
+        params['min_child_weight'] = min_child_weight
+        
+        # run cv
+        cv_results = xgb.cv(
+            params,
+            d_train,
+            num_boost_round = num_boost_round,
+            nfold=5,
+            metrics={'mae'},
+            early_stopping_rounds=10
+        )
+        
+        # print
+        mae = cv_results['test-mae-mean'].min()
+        rounds = cv_results['test-mae-mean'].argmin()
+        print('max_depth:', max_depth, '; min_child_weight:', min_child_weight, '; mae:',mae, '; rounds:', rounds)
+    
+        # check min mae
+        if mae < min_mae:
+            min_mae = mae
+            best_max_depth = max_depth
+            best_min_child_weight = min_child_weight
+                    
+    print('best max_depth:', best_max_depth)
+    print('best min_child_weight:', best_min_child_weight)
+    print('min mae:', min_mae)
+    return best_max_depth, best_min_child_weight
+
+def tune_subsample__colsample_bytree(params):
+    print('\nTuning subsample and colsample_bytree ...')
+    
+    num_boost_round = 5000
+    d_train = xgb.DMatrix(full_train_x, label=full_train_y)
+    
+    subsample_list = [0.1, 0.2, 0.4, 0.6, 0.8, 1.0]
+    colsample_bytree = [0.1, 0.2, 0.4, 0.6, 0.8, 1.0]
+    min_mae = float("Inf")
+    best_subsample = subsample_list[0]
+    best_colsample_bytree = colsample_bytree[0]
+    
+    for subsample, colsample_bytree in zip(subsample_list, colsample_bytree):
+        # update params
+        params['subsample'] = subsample
+        params['colsample_bytree'] = colsample_bytree
+        
+        # run cv
+        cv_results = xgb.cv(
+            params,
+            d_train,
+            num_boost_round = num_boost_round,
+            nfold=5,
+            metrics={'mae'},
+            early_stopping_rounds=10
+        )
+        
+        # print
+        mae = cv_results['test-mae-mean'].min()
+        rounds = cv_results['test-mae-mean'].argmin()
+        print('subsample:', subsample, '; colsample_bytree:', colsample_bytree, '; mae:',mae, '; rounds:', rounds)
+    
+        # check min mae
+        if mae < min_mae:
+            min_mae = mae
+            best_subsample = subsample
+            best_colsample_bytree = colsample_bytree
+                    
+    print('best subsample:', best_subsample)
+    print('best colsample_bytree:', best_colsample_bytree)
+    print('min mae:', min_mae)
+    return best_subsample, best_colsample_bytree
+        
+def tune_alpha_lambda(params):
+    print('\nTuning alpha and lambda ...')
+    
+    num_boost_round = 5000
+    d_train = xgb.DMatrix(full_train_x, label=full_train_y)
+    
+    alpha_list = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+    lambda_list = [1.0, 2.0, 4.0, 6.0, 8.0, 10.0]
+    min_mae = float("Inf")
+    best_alpha = alpha_list[0]
+    best_lambda = lambda_list[0]
+    
+    for alpha, lambdaa in zip(alpha_list, lambda_list):
+        # update params
+        params['alpha'] = alpha
+        params['lambda'] = lambdaa
+        
+        # run cv
+        cv_results = xgb.cv(
+            params,
+            d_train,
+            num_boost_round = num_boost_round,
+            nfold=5,
+            metrics={'mae'},
+            early_stopping_rounds=10
+        )
+        
+        # print
+        mae = cv_results['test-mae-mean'].min()
+        rounds = cv_results['test-mae-mean'].argmin()
+        print('alpha:', alpha, '; lambda:', lambdaa, '; mae:',mae, '; rounds:', rounds)
+    
+        # check min mae
+        if mae < min_mae:
+            min_mae = mae
+            best_alpha = alpha
+            best_lambda = lambdaa
+                    
+    print('best alpha:', best_alpha)
+    print('best lambda:', best_lambda)
+    print('min mae:', min_mae)
+    return alpha, lambdaa
+    
+def _tune_params():
+    params = {
+        'eta': 0.01,
+        #'max_depth': 7, 
+        #'subsample': 0.6,
+        'objective': 'reg:linear',
+        'eval_metric': 'mae',
+        #'lambda': 5.0,
+        #'alpha': 0.65,
+        #'colsample_bytree': 0.5,
+        #'silent': 1
+    }
+
+    # tune eta
+    if True:
+        best_eta = tune_eta(params)
+        params['eta'] = best_eta
+    
+    # tune max_depth and min_child_weight
+    if True:
+        best_max_depth, best_min_child_weight = tune_max_depth__min_child_weight(params)    
+        params['max_depth'] = best_max_depth
+        params['min_child_weight'] = best_min_child_weight
+    
+    # tune subsample and colsample_bytree
+    if True:
+        best_subsample, best_colsample_bytree = tune_subsample__colsample_bytree(params)
+        params['subsample'] = best_subsample
+        params['colsample_bytree'] = best_colsample_bytree
+    
+    # tune alpha and lambda
+    if True:
+        best_alpha, best_lambda = tune_alpha_lambda(params)
+        params['subsample'] = best_alpha
+        params['colsample_bytree'] = best_lambda
+
+        
 ## STEP2: build model
 def _build_model():
     print('\n\nSTEP2: building model ...')
     
+    global best_num_boost_round
+    best_num_boost_round = 1778
+    
     # xgboost params
     global xgb_params
     xgb_params = {
-        'eta': 0.007,
+        'eta': 0.1,
         'max_depth': 7, 
         'subsample': 0.6,
         'objective': 'reg:linear',
@@ -259,6 +475,19 @@ def _build_model():
         'silent': 1
     }
     
+    global full_xgb_params
+    full_xgb_params = {
+        'eta': 0.005,
+        'max_depth': 6,
+        'min_child_weight' : 2,
+        'subsample': 0.4,
+        'colsample_bytree': 0.4,
+        'alpha': 0.8,
+        'lambda': 8.0,
+        'objective': 'reg:linear',
+        'eval_metric': 'mae',
+    }
+    
     # lightgbm params
     global lgb_params
     lgb_params = {
@@ -267,7 +496,7 @@ def _build_model():
         'boosting_type' : 'gbdt',
         'objective' : 'regression',
         'metric' : 'mae',
-        'sub_feature' : 0.5,      # feature_fraction -- OK, back to .5, but maybe later increase this
+        'sub_feature' : 0.2,      # feature_fraction -- OK, back to .5, but maybe later increase this
         'bagging_fraction' : 0.85, # sub_row
         'bagging_freq' : 40, 
         'num_leaves' : 512,        # num_leaf
@@ -281,36 +510,55 @@ def _build_model():
 def _train():
     print('\n\nSTEP3: training ...')
     
-    # xgboost
-    global xgb_clf
-    d_train = xgb.DMatrix(train_x, label=train_y)
-    d_valid = xgb.DMatrix(valid_x, label=valid_y)
-    evals = [(d_train, 'train'), (d_valid, 'valid')]
-    xgb_clf = xgb.train(xgb_params, d_train, num_boost_round=10000, evals=evals, 
-                        early_stopping_rounds=100, verbose_eval=10)
-    
-    # ligtgbm
-    global lgb_clf
-    d_train = lgb.Dataset(train_x, label=train_y)
-    d_valid = lgb.Dataset(valid_x, label=valid_y)
-    valid_sets = [d_train, d_valid]
-    valid_names = ['train', 'valid']
-    lgb_clf = lgb.train(lgb_params, d_train, num_boost_round=10000, 
-                       valid_sets = valid_sets, valid_names = valid_names,
-                       early_stopping_rounds=100,verbose_eval=10)
+    if TRAIN_FULL_SET is False:
+        # xgboost
+        global xgb_clf
+        d_train = xgb.DMatrix(train_x, label=train_y)
+        d_valid = xgb.DMatrix(valid_x, label=valid_y)
+        evals = [(d_train, 'train'), (d_valid, 'valid')]
+        xgb_clf = xgb.train(xgb_params, d_train, 
+                            num_boost_round=best_num_boost_round, evals=evals, 
+                            early_stopping_rounds=100, verbose_eval=10)
         
+        # ligtgbm
+        global lgb_clf
+        d_train = lgb.Dataset(train_x, label=train_y)
+        d_valid = lgb.Dataset(valid_x, label=valid_y)
+        valid_sets = [d_train, d_valid]
+        valid_names = ['train', 'valid']
+        lgb_clf = lgb.train(lgb_params, d_train, 
+                            num_boost_round=5000, 
+                            valid_sets = valid_sets, valid_names = valid_names,
+                            early_stopping_rounds=100,verbose_eval=10)
+    else:
+        # xgboost
+        global full_xgb_clf
+        full_d_train = xgb.DMatrix(full_train_x, label=full_train_y)
+        evals = [(full_d_train, 'train')]
+        full_xgb_clf = xgb.train(full_xgb_params, full_d_train, 
+                                 num_boost_round=best_num_boost_round, 
+                                 evals=evals,verbose_eval=10)
     
+            
 ## STEP4: predict
 def _predict():
     print('\n\nSTEP4: predicting ...')
     
-    global xgb_pred
-    d_test = xgb.DMatrix(test_x)
-    xgb_pred = xgb_clf.predict(d_test)
+    if TRAIN_FULL_SET is False:
+        # xgboost
+        global xgb_pred
+        d_test = xgb.DMatrix(test_x)
+        xgb_pred = xgb_clf.predict(d_test)
     
-    global lgb_pred
-    test_x.values.astype(np.float32, copy=False)
-    lgb_pred = lgb_clf.predict(test_x)
+        # lightgbm
+        global lgb_pred
+        test_x.values.astype(np.float32, copy=False)
+        lgb_pred = lgb_clf.predict(test_x)
+    else:
+        # xgboost
+        global full_xgb_pred
+        d_test = xgb.DMatrix(test_x)
+        full_xgb_pred = full_xgb_clf.predict(d_test)
     
     
 ## STEP5: generate submission    
@@ -319,7 +567,10 @@ def _generate_submission():
 
     submission = pd.read_csv(submission_path)
     for c in submission.columns[submission.columns != 'ParcelId']:
-        submission[c] = lgb_pred
+        if TRAIN_FULL_SET is False:
+            submission[c] = xgb_pred*XGB_WEIGHT + lgb_pred*LGB_WEIGHT
+        else:
+            submission[c] = full_xgb_pred            
         
     submission.to_csv('sub{}.csv'.format(datetime.now().\
                 strftime('%Y%m%d_%H%M%S')), index=False, float_format='%.5f')
@@ -328,10 +579,11 @@ def _generate_submission():
 ## main
 def main():
     _process_data()
+    #_tune_params()
     _build_model()
     _train()
     _predict()
-    #_generate_submission()
+    _generate_submission()
     
 
 if __name__ == "__main__":
