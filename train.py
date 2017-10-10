@@ -10,6 +10,7 @@ import xgboost as xgb
 import lightgbm as lgb
 from datetime import datetime
 import gc
+from sklearn.model_selection import train_test_split
 
 import warnings
 def ignore_warn(*args, **kwargs):
@@ -29,17 +30,19 @@ class Settings(Enum):
     global USE_VALID_DATA
     global VALID_DATA_RATIO
     global TUNE_PARAMS
+    global ANALYZE
     
     train06_path      = 'C:/data/kaggle/zillow_price/train_2016_v2.csv'
     train07_path      = 'C:/data/kaggle/zillow_price/train_2017.csv'
     properties06_path = 'C:/data/kaggle/zillow_price/properties_2016.csv'
     properties07_path = 'C:/data/kaggle/zillow_price/properties_2017.csv'
     submission_path   = 'C:/data/kaggle/zillow_price/sample_submission.csv'
-    XGB_WEIGHT        = 0.5
+    XGB_WEIGHT        = 1.0
     LGB_WEIGHT        = 1 - XGB_WEIGHT
     USE_VALID_DATA    = False
-    VALID_DATA_RATIO  = 0.2
+    VALID_DATA_RATIO  = 0.1
     TUNE_PARAMS       = False
+    ANALYZE           = False
     
     def __str__(self):
         return self.value
@@ -167,12 +170,12 @@ def select_features(df):
     print('\nSelecting important features ...')
     
     drop_features = ['parcelid', 'transactiondate',
-                     'regionidcounty', 
-                     'poolsizesum', 
-                     'yardbuildingsqft26', 
-                     'decktypeid', 
+                     'typeconstructiontypeid', 
                      'storytypeid', 
-                     'pooltypeid2',
+                     'finishedsquarefeet13', 
+                     'yardbuildingsqft26', 
+                     'fips', 
+                     'poolsizesum',
                      ]
     
     df.drop(drop_features, axis=1, inplace=True)
@@ -184,7 +187,8 @@ def _process_data():
     global train_y
     global valid_x
     global valid_y
-    global test_x
+    global test06_x
+    global test07_x
     
     valid_x = None
     valid_y = None
@@ -209,13 +213,16 @@ def _process_data():
     add_features(prop06_df)
     add_features(prop07_df)
     
+    prop06_df['year'] = 2016
+    prop07_df['year'] = 2017
+    
     # merge data
     train06_x = train06_df.merge(prop06_df, how='left', on='parcelid')
     train07_x = train07_df.merge(prop07_df, how='left', on='parcelid')
     train_x = pd.concat([train06_x, train07_x], axis=0)
     
     # analyze (optional)
-    if False:
+    if ANALYZE is True:
         analyze(train_x)
         
     # remove outliers
@@ -231,10 +238,7 @@ def _process_data():
     train_x.drop(['logerror'], axis=1, inplace=True)
 
     if USE_VALID_DATA is True:
-        pass
-        #select_qtr4 = pd.to_datetime(train06_df["transactiondate"]).dt.month>9
-        #train06_x, valid06_x = train06_x[~select_qtr4], train06_x[select_qtr4]
-        #train06_y, valid06_y = train06_y[~select_qtr4], train06_y[select_qtr4]
+        train_x, valid_x, train_y, valid_y = train_test_split(train_x, train_y, test_size=VALID_DATA_RATIO)
         
     print('train x shape: ', train_x.shape)
     print('train y shape: ', train_y.shape)
@@ -248,9 +252,11 @@ def _process_data():
     # prepare test data
     print('\nPreparing test data ...')
     
-    test_x = prop06_df[train_x.columns]
+    test06_x = prop06_df[train_x.columns]
+    test07_x = prop07_df[train_x.columns]
         
-    print('test x shape: ', test_x.shape)
+    print('test x shape: ', test06_x.shape)
+    print('test x shape: ', test07_x.shape)
         
     # release
     del train06_df
@@ -391,8 +397,8 @@ def tune_alpha_lambda(params):
     num_boost_round = 5000
     d_train = xgb.DMatrix(train_x, label=train_y)
     
-    alpha_list = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
-    lambda_list = [1.0, 2.0, 4.0, 6.0, 8.0, 10.0]
+    alpha_list = [0.0, 0.4, 0.8, 1.2, 1.6, 2.0, 2.4, 2.8]
+    lambda_list = [2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0]
     min_mae = float("Inf")
     best_alpha = alpha_list[0]
     best_lambda = lambda_list[0]
@@ -475,30 +481,17 @@ def _build_model():
     # xgboost params
     global xgb_params
     xgb_params = {
-        'eta': 0.1,
-        'max_depth': 7, 
+        'eta': 0.025,
+        'max_depth': 6, 
+        'min_child_weight': 2,
         'subsample': 0.6,
-        'objective': 'reg:linear',
-        'eval_metric': 'mae',
-        'lambda': 5.0,
-        'alpha': 0.65,
-        'colsample_bytree': 0.5,
-        'silent': 1
-    }
-    
-    global full_xgb_params
-    full_xgb_params = {
-        'eta': 0.005,
-        'max_depth': 6,
-        'min_child_weight' : 2,
-        'subsample': 0.4,
-        'colsample_bytree': 0.4,
-        'alpha': 0.8,
-        'lambda': 8.0,
+        'colsample_bytree': 0.6,
+        'alpha': 2.0,
+        'lambda': 12.0,
         'objective': 'reg:linear',
         'eval_metric': 'mae',
     }
-    
+        
     # lightgbm params
     global lgb_params
     lgb_params = {
@@ -524,13 +517,15 @@ def _train():
     global xgb_clf
     global lgb_clf
     
+    num_boost_round = 475
+    
     if USE_VALID_DATA is True:
         # xgboost
         d_train = xgb.DMatrix(train_x, label=train_y)
         d_valid = xgb.DMatrix(valid_x, label=valid_y)
         evals = [(d_train, 'train'), (d_valid, 'valid')]
         xgb_clf = xgb.train(xgb_params, d_train, 
-                            num_boost_round=best_num_boost_round, evals=evals, 
+                            num_boost_round=num_boost_round, evals=evals, 
                             early_stopping_rounds=100, verbose_eval=10)
         
         # ligtgbm
@@ -539,37 +534,49 @@ def _train():
         valid_sets = [d_train, d_valid]
         valid_names = ['train', 'valid']
         lgb_clf = lgb.train(lgb_params, d_train, 
-                            num_boost_round=5000, 
-                            valid_sets = valid_sets, valid_names = valid_names,
+                            num_boost_round=num_boost_round, 
+                            valid_sets = valid_sets, valid_names=valid_names,
                             early_stopping_rounds=100,verbose_eval=10)
     else:
         # xgboost
         d_train = xgb.DMatrix(train_x, label=train_y)
         evals = [(d_train, 'train')]
-        xgb_clf = xgb.train(full_xgb_params, d_train, 
-                            num_boost_round=100000, 
-                            evals=evals,verbose_eval=10)
+        xgb_clf = xgb.train(xgb_params, d_train, 
+                            num_boost_round=num_boost_round, evals=evals,
+                            early_stopping_rounds=100, verbose_eval=10)
     
             
 ## STEP4: predict
 def _predict():
     print('\n\nSTEP4: predicting ...')
     
-    global xgb_pred
-    global lgb_pred
+    global xgb_pred06
+    global xgb_pred07
     
+    global lgb_pred06
+    global lgb_pred07
+
+    test06_x.values.astype(np.float32, copy=False)
+    test07_x.values.astype(np.float32, copy=False)
+        
     if USE_VALID_DATA is True:
         # xgboost
-        d_test = xgb.DMatrix(test_x)
-        xgb_pred = xgb_clf.predict(d_test)
+        d_test06 = xgb.DMatrix(test06_x)
+        d_test07 = xgb.DMatrix(test07_x)
+        
+        xgb_pred06 = xgb_clf.predict(d_test06)
+        xgb_pred07 = xgb_clf.predict(d_test07)
     
-        # lightgbm
-        test_x.values.astype(np.float32, copy=False)
-        lgb_pred = lgb_clf.predict(test_x)
+        # lightgbm        
+        lgb_pred06 = lgb_clf.predict(test06_x)
+        lgb_pred07 = lgb_clf.predict(test07_x)
     else:
         # xgboost
-        d_test = xgb.DMatrix(test_x)
-        xgb_pred = xgb_clf.predict(d_test)
+        d_test06 = xgb.DMatrix(test06_x)
+        d_test07 = xgb.DMatrix(test07_x)
+        
+        xgb_pred06 = xgb_clf.predict(d_test06)
+        xgb_pred07 = xgb_clf.predict(d_test07)
     
     
 ## STEP5: generate submission    
@@ -579,9 +586,15 @@ def _generate_submission():
     submission = pd.read_csv(submission_path)
     for c in submission.columns[submission.columns != 'ParcelId']:
         if USE_VALID_DATA is True:
-            submission[c] = xgb_pred*XGB_WEIGHT + lgb_pred*LGB_WEIGHT
+            if c in ['201610', '201611', '201612']:
+                submission[c] = xgb_pred06*XGB_WEIGHT + lgb_pred06*LGB_WEIGHT
+            else:
+                submission[c] = xgb_pred07*XGB_WEIGHT + lgb_pred07*LGB_WEIGHT
         else:
-            submission[c] = xgb_pred            
+            if c in ['201610', '201611', '201612']:
+                submission[c] = xgb_pred06
+            else:
+                submission[c] = xgb_pred07
         
     submission.to_csv('sub{}.csv'.format(datetime.now().\
                 strftime('%Y%m%d_%H%M%S')), index=False, float_format='%.5f')
