@@ -18,6 +18,7 @@ def ignore_warn(*args, **kwargs):
 warnings.warn = ignore_warn #ignore annoying warning (from sklearn and seaborn)
 
 
+################################################################################
 ## STEP0: do setting
 class Settings(Enum):
     global train06_path
@@ -32,12 +33,12 @@ class Settings(Enum):
     global TUNE_PARAMS
     global ANALYZE
     
-    train06_path      = 'C:/data/kaggle/zillow_price/train_2016_v2.csv'
-    train07_path      = 'C:/data/kaggle/zillow_price/train_2017.csv'
-    properties06_path = 'C:/data/kaggle/zillow_price/properties_2016.csv'
-    properties07_path = 'C:/data/kaggle/zillow_price/properties_2017.csv'
-    submission_path   = 'C:/data/kaggle/zillow_price/sample_submission.csv'
-    XGB_WEIGHT        = 1.0
+    train06_path      = '/data/kaggle/zillow_prize/train_2016_v2.csv'
+    train07_path      = '/data/kaggle/zillow_prize/train_2017.csv'
+    properties06_path = '/data/kaggle/zillow_prize/properties_2016.csv'
+    properties07_path = '/data/kaggle/zillow_prize/properties_2017.csv'
+    submission_path   = '/data/kaggle/zillow_prize/sample_submission.csv'
+    XGB_WEIGHT        = 0.35
     LGB_WEIGHT        = 1 - XGB_WEIGHT
     USE_VALID_DATA    = False
     VALID_DATA_RATIO  = 0.1
@@ -47,7 +48,8 @@ class Settings(Enum):
     def __str__(self):
         return self.value
         
-    
+
+################################################################################    
 ## STEP1: process data
 def analyze(df):
     print('\nAnalyzing ...')
@@ -266,6 +268,7 @@ def _process_data():
     gc.collect()
     
 
+################################################################################
 ## STEPZZZ: tune hyperparameters
 def tune_eta(params):
     print('\nTuning eta ...')
@@ -435,6 +438,8 @@ def tune_alpha_lambda(params):
     return alpha, lambdaa
     
 def _tune_params():
+    print('\nSTEPZZZ: tuning paramters ...')
+    
     params = {
         'eta': 0.01,
         #'max_depth': 7, 
@@ -470,13 +475,14 @@ def _tune_params():
         params['subsample'] = best_alpha
         params['colsample_bytree'] = best_lambda
 
-        
+
+################################################################################        
 ## STEP2: build model
 def _build_model():
     print('\n\nSTEP2: building model ...')
     
     global best_num_boost_round
-    best_num_boost_round = 1778
+    best_num_boost_round = 474
     
     # xgboost params
     global xgb_params
@@ -484,16 +490,26 @@ def _build_model():
         'eta': 0.025,
         'max_depth': 6, 
         'min_child_weight': 2,
-        'subsample': 0.6,
-        'colsample_bytree': 0.6,
-        'alpha': 2.0,
-        'lambda': 12.0,
+        'subsample': 0.8,
+        'colsample_bytree': 0.8,
+        'alpha': 1.6,
+        'lambda': 10.0,
         'objective': 'reg:linear',
         'eval_metric': 'mae',
     }
         
     # lightgbm params
     global lgb_params
+    lgb_params = {}
+    lgb_params['metric'] = 'mae'
+    lgb_params['max_depth'] = 100
+    lgb_params['num_leaves'] = 32
+    lgb_params['feature_fraction'] = .85
+    lgb_params['bagging_fraction'] = .95
+    lgb_params['bagging_freq'] = 8
+    lgb_params['learning_rate'] = 0.0025
+    lgb_params['verbosity'] = 0    
+    '''
     lgb_params = {
         'max_bin' : 10,
         'learning_rate' : 0.0021, # shrinkage_rate
@@ -508,8 +524,9 @@ def _build_model():
         'min_hessian' : 0.05,     # min_sum_hessian_in_leaf
         'verbose' : 0,
     }
-    
-    
+    '''
+  
+################################################################################    
 ## STEP3: train    
 def _train():
     print('\n\nSTEP3: training ...')
@@ -517,15 +534,13 @@ def _train():
     global xgb_clf
     global lgb_clf
     
-    num_boost_round = 475
-    
     if USE_VALID_DATA is True:
         # xgboost
         d_train = xgb.DMatrix(train_x, label=train_y)
         d_valid = xgb.DMatrix(valid_x, label=valid_y)
         evals = [(d_train, 'train'), (d_valid, 'valid')]
         xgb_clf = xgb.train(xgb_params, d_train, 
-                            num_boost_round=num_boost_round, evals=evals, 
+                            num_boost_round=best_num_boost_round, evals=evals, 
                             early_stopping_rounds=100, verbose_eval=10)
         
         # ligtgbm
@@ -534,18 +549,28 @@ def _train():
         valid_sets = [d_train, d_valid]
         valid_names = ['train', 'valid']
         lgb_clf = lgb.train(lgb_params, d_train, 
-                            num_boost_round=num_boost_round, 
-                            valid_sets = valid_sets, valid_names=valid_names,
-                            early_stopping_rounds=100,verbose_eval=10)
+                            num_boost_round=2930, 
+                            valid_sets = valid_sets, valid_names = valid_names,
+                            early_stopping_rounds=100, verbose_eval=10)
     else:
         # xgboost
         d_train = xgb.DMatrix(train_x, label=train_y)
         evals = [(d_train, 'train')]
         xgb_clf = xgb.train(xgb_params, d_train, 
-                            num_boost_round=num_boost_round, evals=evals,
+                            num_boost_round=best_num_boost_round, evals=evals,
                             early_stopping_rounds=100, verbose_eval=10)
     
-            
+        # ligtgbm
+        d_train = lgb.Dataset(train_x, label=train_y)
+        valid_sets = [d_train]
+        valid_names = ['train']
+        lgb_clf = lgb.train(lgb_params, d_train, 
+                            num_boost_round=2930, 
+                            valid_sets = valid_sets, valid_names = valid_names,
+                            early_stopping_rounds=100, verbose_eval=10)
+
+
+################################################################################            
 ## STEP4: predict
 def _predict():
     print('\n\nSTEP4: predicting ...')
@@ -559,47 +584,35 @@ def _predict():
     test06_x.values.astype(np.float32, copy=False)
     test07_x.values.astype(np.float32, copy=False)
         
-    if USE_VALID_DATA is True:
-        # xgboost
-        d_test06 = xgb.DMatrix(test06_x)
-        d_test07 = xgb.DMatrix(test07_x)
+    # xgboost
+    d_test06 = xgb.DMatrix(test06_x)
+    d_test07 = xgb.DMatrix(test07_x)
+    
+    xgb_pred06 = xgb_clf.predict(d_test06)
+    xgb_pred07 = xgb_clf.predict(d_test07)
+
+    # lightgbm        
+    lgb_pred06 = lgb_clf.predict(test06_x)
+    lgb_pred07 = lgb_clf.predict(test07_x)
         
-        xgb_pred06 = xgb_clf.predict(d_test06)
-        xgb_pred07 = xgb_clf.predict(d_test07)
     
-        # lightgbm        
-        lgb_pred06 = lgb_clf.predict(test06_x)
-        lgb_pred07 = lgb_clf.predict(test07_x)
-    else:
-        # xgboost
-        d_test06 = xgb.DMatrix(test06_x)
-        d_test07 = xgb.DMatrix(test07_x)
-        
-        xgb_pred06 = xgb_clf.predict(d_test06)
-        xgb_pred07 = xgb_clf.predict(d_test07)
-    
-    
+################################################################################    
 ## STEP5: generate submission    
 def _generate_submission():
     print('\n\nSTEP5: generating submission ...')
 
     submission = pd.read_csv(submission_path)
     for c in submission.columns[submission.columns != 'ParcelId']:
-        if USE_VALID_DATA is True:
-            if c in ['201610', '201611', '201612']:
-                submission[c] = xgb_pred06*XGB_WEIGHT + lgb_pred06*LGB_WEIGHT
-            else:
-                submission[c] = xgb_pred07*XGB_WEIGHT + lgb_pred07*LGB_WEIGHT
+        if c in ['201610', '201611', '201612']:
+            submission[c] = xgb_pred06*XGB_WEIGHT + lgb_pred06*LGB_WEIGHT
         else:
-            if c in ['201610', '201611', '201612']:
-                submission[c] = xgb_pred06
-            else:
-                submission[c] = xgb_pred07
-        
+            submission[c] = xgb_pred07*XGB_WEIGHT + lgb_pred07*LGB_WEIGHT
+                        
     submission.to_csv('sub{}.csv'.format(datetime.now().\
                 strftime('%Y%m%d_%H%M%S')), index=False, float_format='%.5f')
 
 
+################################################################################
 ## main
 def main():
     _process_data()
@@ -612,6 +625,7 @@ def main():
         _generate_submission()
     
 
+################################################################################
 if __name__ == "__main__":
     main()
     print('\n\n\nThe end.')
