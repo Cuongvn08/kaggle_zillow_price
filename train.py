@@ -38,7 +38,7 @@ class Settings(Enum):
     properties06_path = '/data/kaggle/zillow_prize/properties_2016.csv'
     properties07_path = '/data/kaggle/zillow_prize/properties_2017.csv'
     submission_path   = '/data/kaggle/zillow_prize/sample_submission.csv'
-    XGB_WEIGHT        = 0.35
+    XGB_WEIGHT        = 0.25
     LGB_WEIGHT        = 1 - XGB_WEIGHT
     USE_VALID_DATA    = False
     VALID_DATA_RATIO  = 0.1
