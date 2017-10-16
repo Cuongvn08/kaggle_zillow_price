@@ -8,6 +8,7 @@ import pandas as pd
 from sklearn import preprocessing
 import xgboost as xgb
 import lightgbm as lgb
+import catboost as ctb
 from datetime import datetime
 import gc
 from sklearn.model_selection import train_test_split
@@ -509,37 +510,25 @@ def _build_model():
     lgb_params['bagging_freq'] = 8
     lgb_params['learning_rate'] = 0.0025
     lgb_params['verbosity'] = 0    
-    '''
-    lgb_params = {
-        'max_bin' : 10,
-        'learning_rate' : 0.0021, # shrinkage_rate
-        'boosting_type' : 'gbdt',
-        'objective' : 'regression',
-        'metric' : 'mae',
-        'sub_feature' : 0.2,      # feature_fraction -- OK, back to .5, but maybe later increase this
-        'bagging_fraction' : 0.85, # sub_row
-        'bagging_freq' : 40, 
-        'num_leaves' : 512,        # num_leaf
-        'min_data' : 500,         # min_data_in_leaf
-        'min_hessian' : 0.05,     # min_sum_hessian_in_leaf
-        'verbose' : 0,
-    }
-    '''
-  
+
+    # catboost params
+    # TBD
+    
 ################################################################################    
 ## STEP3: train    
 def _train():
     print('\n\nSTEP3: training ...')
     
-    global xgb_clf
-    global lgb_clf
+    global xgb_reg
+    global lgb_reg
+    global ctb_reg
     
     if USE_VALID_DATA is True:
         # xgboost
         d_train = xgb.DMatrix(train_x, label=train_y)
         d_valid = xgb.DMatrix(valid_x, label=valid_y)
         evals = [(d_train, 'train'), (d_valid, 'valid')]
-        xgb_clf = xgb.train(xgb_params, d_train, 
+        xgb_reg = xgb.train(xgb_params, d_train, 
                             num_boost_round=best_num_boost_round, evals=evals, 
                             early_stopping_rounds=100, verbose_eval=10)
         
@@ -548,7 +537,7 @@ def _train():
         d_valid = lgb.Dataset(valid_x, label=valid_y)
         valid_sets = [d_train, d_valid]
         valid_names = ['train', 'valid']
-        lgb_clf = lgb.train(lgb_params, d_train, 
+        lgb_reg = lgb.train(lgb_params, d_train, 
                             num_boost_round=2930, 
                             valid_sets = valid_sets, valid_names = valid_names,
                             early_stopping_rounds=100, verbose_eval=10)
@@ -556,7 +545,7 @@ def _train():
         # xgboost
         d_train = xgb.DMatrix(train_x, label=train_y)
         evals = [(d_train, 'train')]
-        xgb_clf = xgb.train(xgb_params, d_train, 
+        xgb_reg = xgb.train(xgb_params, d_train, 
                             num_boost_round=best_num_boost_round, evals=evals,
                             early_stopping_rounds=100, verbose_eval=10)
     
@@ -564,10 +553,16 @@ def _train():
         d_train = lgb.Dataset(train_x, label=train_y)
         valid_sets = [d_train]
         valid_names = ['train']
-        lgb_clf = lgb.train(lgb_params, d_train, 
+        lgb_reg = lgb.train(lgb_params, d_train, 
                             num_boost_round=2930, 
                             valid_sets = valid_sets, valid_names = valid_names,
                             early_stopping_rounds=100, verbose_eval=10)
+        
+        ctb_reg = ctb.CatBoostRegressor(iterations=630, learning_rate=0.03,
+                                        depth=6, l2_leaf_reg=3,
+                                        loss_function='MAE',
+                                        eval_metric='MAE')
+        ctb_reg.fit(train_x, train_y, verbose=True)
 
 
 ################################################################################            
@@ -581,6 +576,9 @@ def _predict():
     global lgb_pred06
     global lgb_pred07
 
+    global ctb_pred06
+    global ctb_pred07
+    
     test06_x.values.astype(np.float32, copy=False)
     test07_x.values.astype(np.float32, copy=False)
         
@@ -588,13 +586,17 @@ def _predict():
     d_test06 = xgb.DMatrix(test06_x)
     d_test07 = xgb.DMatrix(test07_x)
     
-    xgb_pred06 = xgb_clf.predict(d_test06)
-    xgb_pred07 = xgb_clf.predict(d_test07)
+    xgb_pred06 = xgb_reg.predict(d_test06)
+    xgb_pred07 = xgb_reg.predict(d_test07)
 
     # lightgbm        
-    lgb_pred06 = lgb_clf.predict(test06_x)
-    lgb_pred07 = lgb_clf.predict(test07_x)
+    lgb_pred06 = lgb_reg.predict(test06_x)
+    lgb_pred07 = lgb_reg.predict(test07_x)
         
+    # catboost
+    ctb_pred06 = ctb_reg.predict(test06_x)
+    ctb_pred07 = ctb_reg.predict(test07_x)
+    
     
 ################################################################################    
 ## STEP5: generate submission    
@@ -604,9 +606,11 @@ def _generate_submission():
     submission = pd.read_csv(submission_path)
     for c in submission.columns[submission.columns != 'ParcelId']:
         if c in ['201610', '201611', '201612']:
-            submission[c] = xgb_pred06*XGB_WEIGHT + lgb_pred06*LGB_WEIGHT
+            #submission[c] = xgb_pred06*XGB_WEIGHT + lgb_pred06*LGB_WEIGHT
+            submission[c] = ctb_pred06
         else:
-            submission[c] = xgb_pred07*XGB_WEIGHT + lgb_pred07*LGB_WEIGHT
+            #submission[c] = xgb_pred07*XGB_WEIGHT + lgb_pred07*LGB_WEIGHT
+            submission[c] = ctb_pred07
                         
     submission.to_csv('sub{}.csv'.format(datetime.now().\
                 strftime('%Y%m%d_%H%M%S')), index=False, float_format='%.5f')

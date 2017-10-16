@@ -3,7 +3,7 @@ import pandas as pd # data processing, CSV file I/O (e.g. pd.read_csv)
 from catboost import CatBoostRegressor
 from tqdm import tqdm
 import gc
-import datetime as dt
+from datetime import datetime
 
 print('Loading Properties ...')
 properties2016 = pd.read_csv('/data/kaggle/zillow_prize/properties_2016.csv', low_memory = False)
@@ -135,5 +135,5 @@ for label, test_date in test_dates.items():
     print("Predicting for: %s ... " % (label))
     submission[label] = y_pred
     
-submission.to_csv('sub{}.csv'.format(dt.now().\
+submission.to_csv('sub{}.csv'.format(datetime.now().\
             strftime('%Y%m%d_%H%M%S')), index=False, float_format='%.5f')
